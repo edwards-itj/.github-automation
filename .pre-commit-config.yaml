@@ -1,0 +1,16 @@
+repos:
+- repo: https://github.com/antonbabenko/pre-commit-terraform
+  rev: v1.95.0 # Get the latest from: https://github.com/antonbabenko/pre-commit-terraform/releases
+  hooks:
+    - id: terraform_fmt
+    - id: terraform_docs
+      args:
+      - --args=--config=.terraform-docs.yml
+      - --args=--output-file=README.md
+    - id: terraform_trivy
+      args:
+      - --args=--severity HIGH,CRITICAL
+      - --args=--exit-code 1
+    - id: infracost_breakdown
+      args:
+      - --args=--path .

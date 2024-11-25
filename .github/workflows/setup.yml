@@ -1,0 +1,281 @@
+name: 'Setup Repository'
+
+on:
+  workflow_dispatch:
+    inputs:
+      group_description:
+        type: string
+        default: 'Some Description'
+        description: 'Group/Team Description'
+      group_prefix:
+        type: string
+        default: ''
+        description: 'Group Name Prefix'
+      administrative_unit_name:
+        type: string
+        default: 'GitHub'
+        description: 'Entra Id Admin Unit Name'
+      team_name:
+        type: string
+        required: false
+        description: 'Team Name'
+      project_name:
+        type: string
+        required: false
+        description: 'Project Name'
+      members:
+        type: string
+        default: '[]'
+        description: 'Members List (JSON)'
+      team_owners:
+        type: string
+        default: '[]'
+        description: 'Group Owners List (JSON)'
+      permission:
+        type: choice
+        required: false
+        default: maintain
+        description: 'Repository Permission'
+        options: 
+        - pull
+        - push
+        - maintain
+      app_name:
+        type: string
+        default: 'GitHub Enterprise Managed User'
+        description: 'Enterprise App Name for SCIM'
+      github_organization:
+        type: string
+        description: 'GitHub Organization Name'
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+env:
+  working-directory: ${{ github.workspace }}
+  terraform-version: "1.9.8"
+  ARM_RESOURCE_GROUP: ${{ secrets.ARM_RESOURCE_GROUP }}
+  STORAGE_ACCOUNT_NAME: ${{ secrets.STORAGE_ACCOUNT_NAME }}
+  CONTAINER_NAME: "tfstate"
+  ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+  ARM_USE_OIDC: true
+  ARM_USE_AZUREAD: true
+  GITHUB_OWNER: ${{ github.event_name == 'push' && github.repository_owner || ( github.event.inputs.github_organization != '' && github.repository_owner || github.event.inputs.github_organization ) }}
+  TF_VAR_github_organization: ${{ github.event_name == 'push' && github.repository_owner || ( github.event.inputs.github_organization != '' && github.repository_owner || github.event.inputs.github_organization ) }}
+  TF_VAR_app_name:  ${{ github.event_name == 'push' && 'GitHub Enterprise Managed User' || github.event.inputs.app_name }}
+  TF_VAR_administrative_unit_name:  ${{ github.event_name == 'push' && 'GitHub' || github.event.inputs.administrative_unit_name }}
+  TF_VAR_group_description: ${{ github.event_name == 'push' && '' || github.event.inputs.group_description }}
+  TF_VAR_group_prefix: ${{ github.event_name == 'push' && 'Prefix' || github.event.inputs.group_prefix }}
+  TF_VAR_team_name: ${{ github.event_name == 'push' && 'Team' || github.event.inputs.team_name }}
+  TF_VAR_project_name: ${{ github.event_name == 'push' && 'Project' || github.event.inputs.project_name }}
+  TF_VAR_member_type: 'Restricted User'
+  TF_VAR_members: ${{ github.event_name == 'push' && '[]' || github.event.inputs.members }}
+  TF_VAR_team_owners: ${{ github.event_name == 'push' && '[]' || github.event.inputs.team_owners }}
+  TF_VAR_permission: ${{ github.event_name == 'push' && 'maintain' || github.event.inputs.permission }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    environment: prod
+    outputs:
+      tfplanExitCode: ${{ steps.plan.outputs.exitcode }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ env.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 'Az CLI login'
+        uses: azure/login@v2.2.0
+        with:
+          client-id: ${{ secrets.ARM_CLIENT_ID }}
+          tenant-id: ${{ secrets.ARM_TENANT_ID }}
+          subscription-id: ${{ env.ARM_SUBSCRIPTION_ID }}
+          allow-no-subscriptions: true
+
+      # Install the latest version of Terraform CLI and configure the Terraform CLI configuration file with a Terraform Cloud user API token
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.terraform-version }}
+
+      # Initialize a new or existing Terraform working directory by creating initial files, loading any remote state, downloading modules, etc.
+      - name: Terraform Init
+        env:
+          ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ env.ARM_SUBSCRIPTION_ID }}
+        run: |
+          # set default resource group
+          az config set defaults.group=${{ env.ARM_RESOURCE_GROUP }}
+          # create container if not exists
+          az storage container create -n ${{ env.CONTAINER_NAME }} -g ${{ env.ARM_RESOURCE_GROUP }} --account-name ${{ env.STORAGE_ACCOUNT_NAME }} 
+
+          terraform init \
+          -backend-config="resource_group_name=${{ env.ARM_RESOURCE_GROUP }}" \
+          -backend-config="storage_account_name=${{ env.STORAGE_ACCOUNT_NAME }}" \
+          -backend-config="container_name=${{ env.CONTAINER_NAME }}" \
+          -backend-config="key=repos/${{ github.repository_owner }}.${{ env.TF_VAR_team_name }}.${{ env.TF_VAR_project_name }}.tfstate" \
+
+      # Checks that all Terraform configuration files adhere to a canonical format
+      - name: Terraform Format
+        run: terraform fmt -check
+
+      - name: Terraform Plan
+        id: plan
+        env:
+          ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ env.ARM_SUBSCRIPTION_ID }}
+          GITHUB_APP_ID: ${{ secrets.APP_ID }}
+          GITHUB_APP_INSTALLATION_ID: ${{ secrets.APP_INSTALLATION_ID }}
+          GITHUB_APP_PEM_FILE: ${{ secrets.APP_PEM_FILE }}
+        run: |
+          export exitcode=0
+          terraform plan -lock=false -input=false -detailed-exitcode -no-color -out tfplan || export exitcode=$?
+
+          echo "exitcode=$exitcode" >> $GITHUB_OUTPUT
+          
+          if [ $exitcode -eq 2 ]; then
+            echo "Status Code: $exitcode (Succeeded with non-empty diff (changes present))"
+            exit 0
+          elif [ $exitcode -eq 0 ]; then
+            echo "Status Code: $exitcode (Succeeded with empty diff (no changes))"
+            exit 0
+          else
+            echo "Status Code: $exitcode (Error)"
+            exit 1
+          fi
+      
+      # Create string output of Terraform Plan
+      - name: Create String Output
+        id: tf-plan-string
+        run: |
+          TERRAFORM_PLAN=$(terraform show -no-color tfplan)
+          
+          delimiter="$(openssl rand -hex 8)"
+          echo "summary<<${delimiter}" >> $GITHUB_OUTPUT
+          echo "## Terraform Plan Output" >> $GITHUB_OUTPUT
+          echo "<details><summary>Click to expand</summary>" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo '```terraform' >> $GITHUB_OUTPUT
+          echo "$TERRAFORM_PLAN" >> $GITHUB_OUTPUT
+          echo '```' >> $GITHUB_OUTPUT
+          echo "</details>" >> $GITHUB_OUTPUT
+          echo "${delimiter}" >> $GITHUB_OUTPUT
+      
+      # Publish Terraform Plan as task summary
+      - name: Publish Terraform Plan to Task Summary
+        env:
+          SUMMARY: ${{ steps.tf-plan-string.outputs.summary }}
+        run: |
+          echo "$SUMMARY" >> $GITHUB_STEP_SUMMARY
+    
+      - name: Run Trivy scanner
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: config
+          hide-progress: true
+          output: trivy.txt
+        
+      - name: Publish Trivy Output to Summary
+        run: |
+          if [[ -s trivy.txt ]]; then
+            {
+              echo "### Security Output"
+              echo "<details><summary>Click to expand</summary>"
+              echo ""
+              echo '```terraform'
+              cat trivy.txt
+              echo '```'
+              echo "</details>"
+            } >> $GITHUB_STEP_SUMMARY
+          fi
+        
+      # If this is a PR post the changes
+      - name: Push Terraform Output to PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        env:
+          SUMMARY: "${{ steps.tf-plan-string.outputs.summary }}"
+        with:
+            github-token: ${{ secrets.GITHUB_TOKEN }}
+            script: |
+              const body = `${process.env.SUMMARY}`;
+              github.rest.issues.createComment({
+                  issue_number: context.issue.number,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  body: body
+              })
+
+      # Save plan to artifacts  
+      - name: Publish Terraform Plan
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: ${{ env.working-directory }}/tfplan
+
+      - name: Publish Terraform Lock File
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tflock
+          include-hidden-files: true
+          path: ${{ env.working-directory }}/.terraform.lock.hcl
+
+      - name: Publish Terraform Cache
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfcache
+          include-hidden-files: true
+          path: ${{ env.working-directory }}/.terraform/*
+
+  apply:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: prod
+    needs: plan
+    steps:
+      - name: 'Download Terraform Plan'
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+
+      - name: 'Download Terraform Lock File'
+        uses: actions/download-artifact@v4
+        with:
+          name: tflock
+          
+      - name: 'Download Terraform Cache'
+        uses: actions/download-artifact@v4
+        with:
+          name: tfcache
+          path: ${{ github.workspace }}/.terraform/
+
+      - name: 'Permit Cache Execute'
+        run: chmod -R +rwx ${{ github.workspace }}/.terraform/
+
+      - name: 'Az CLI login'
+        uses: azure/login@v2.2.0
+        with:
+          client-id: ${{ secrets.ARM_CLIENT_ID }}
+          tenant-id: ${{ secrets.ARM_TENANT_ID }}
+          subscription-id: ${{ env.ARM_SUBSCRIPTION_ID }}
+          allow-no-subscriptions: true
+
+      - name: Terraform Apply
+        env:
+          ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ env.ARM_SUBSCRIPTION_ID }}
+          GITHUB_APP_ID: ${{ secrets.APP_ID }}
+          GITHUB_APP_INSTALLATION_ID: ${{ secrets.APP_INSTALLATION_ID }}
+          GITHUB_APP_PEM_FILE: ${{ secrets.APP_PEM_FILE }}
+        run: terraform apply -auto-approve -input=false tfplan
