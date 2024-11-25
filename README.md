@@ -23,8 +23,8 @@ In addition to the assumptions above. The below need to be setup prior to the us
 1. Create and Entra Id Administrative Unit for GitHub Groups.
 
 2. Create an Entra Id service principal (preferrably with OIDC).
-<br>
-[https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/configuring-openid-connect-in-azure](https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/configuring-openid-connect-in-azure)
+<be>
+https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/configuring-openid-connect-in-azure
 
 3. Provide the Entra Id role `Directory Reader`
 
@@ -80,6 +80,7 @@ curl -L \
   -d $data
 ```
 ### With GH CLI
+```
 gh api \
   --method POST \
   -H "Accept: application/vnd.github+json" \
