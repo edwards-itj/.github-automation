@@ -36,8 +36,6 @@ resource "github_emu_group_mapping" "this" {
 locals {
   name_parts       = split("-", github_team.this.name)
   contains_project = length(local.name_parts) > 6 || var.project_name != null
-  #"cs-ea-githubenterprise-cs-test-maintainer"
-  #"cs-ea-githubenterprise-cs-test-api-maintainer"
   team_name    = var.team_name == null ? element(local.name_parts, 4) : var.team_name
   project_name = local.contains_project == true ? (var.project_name != null ? var.project_name : element(local.name_parts, 5)) : ""
   repo_name    = join(".", compact([var.repo_prefix, local.team_name, local.project_name]))
